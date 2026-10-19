@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>保卫萝卜 · 网页版</title>
+<meta name="description" content="经典塔防《保卫萝卜》的浏览器实现：五种防御塔、十五波怪物、升级与拆塔、纯前端零依赖。">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#7cc44c">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%A5%95%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app">
+  <header class="hud">
+    <div class="hud__brand">
+      <span class="hud__mark" aria-hidden="true">🥕</span>
+      <div>
+        <h1>保卫萝卜</h1>
+        <p>15 波怪物 · 5 种防御塔</p>
+      </div>
+    </div>
+
+    <div class="hud__hp">
+      <span class="hud__label">萝卜生命</span>
+      <div class="hpbar"><i id="hpBar"></i></div>
+      <b id="hp">20 / 20</b>
+    </div>
+
+    <div class="chip">🪙 <b id="coins">320</b></div>
+    <div class="chip">波次 <b id="wave">0</b><span class="chip__dim"> / <span id="waveTotal">15</span></span></div>
+
+    <div class="hud__spacer"></div>
+
+    <span class="hud__build" id="buildInfo">下一波 12s</span>
+    <button class="btn btn--primary" type="button" id="startBtn">立即开战</button>
+    <button class="btn" type="button" id="pauseBtn">暂停</button>
+    <button class="btn" type="button" id="speedBtn">1×</button>
+    <button class="btn btn--ghost" type="button" id="restartBtn">重开</button>
+  </header>
+
+  <main class="stage">
+    <canvas id="board" width="960" height="600" aria-label="游戏画面"></canvas>
+
+    <div class="banner" id="banner" aria-live="polite"></div>
+
+    <div class="overlay" id="overlay" hidden>
+      <div class="overlay__card">
+        <h2 id="overlayTitle">守住了！</h2>
+        <p id="overlayText"></p>
+        <button class="btn btn--primary" type="button" id="againBtn">再来一局</button>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" role="status"></div>
+  </main>
+
+  <footer class="dock">
+    <div class="shop" id="shop" aria-label="建造菜单"></div>
+    <aside class="inspect" id="inspect" hidden aria-label="选中塔信息">
+      <div id="inspectBody"></div>
+    </aside>
+  </footer>
+
+  <p class="hint">点下方卡片选塔 → 点空地建造 · 点塔可升级/拆除 · 空格开下一波 · P 暂停</p>
+</div>
+
+<script type="module" src="js/ui.js"></script>
+</body>
+</html>
