@@ -1,71 +1,60 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>保卫萝卜 · 网页版</title>
-<meta name="description" content="经典塔防《保卫萝卜》的浏览器实现：五种防御塔、十五波怪物、升级与拆塔、纯前端零依赖。">
-<meta name="color-scheme" content="light">
-<meta name="theme-color" content="#7cc44c">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%A5%95%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="styles.css">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>保卫萝卜 · 网页塔防</title>
+<meta name="description" content="打开即玩的网页塔防：5 种塔、15 波、零依赖、无账号。" />
+<link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-
-<div class="app">
+<main class="app">
   <header class="hud">
-    <div class="hud__brand">
-      <span class="hud__mark" aria-hidden="true">🥕</span>
-      <div>
-        <h1>保卫萝卜</h1>
-        <p>15 波怪物 · 5 种防御塔</p>
+    <div class="hud-group">
+      <div class="brand">保卫萝卜</div>
+      <div class="hp">
+        <span class="hp-num" id="hpText">20</span>
+        <div class="hp-track"><i id="hpFill" class="ok"></i></div>
       </div>
     </div>
 
-    <div class="hud__hp">
-      <span class="hud__label">萝卜生命</span>
-      <div class="hpbar"><i id="hpBar"></i></div>
-      <b id="hp">20 / 20</b>
+    <div class="hud-group stats">
+      <div class="stat"><label>金币</label><b id="coins">320</b></div>
+      <div class="stat"><label>波次</label><b id="wave">0/15</b></div>
     </div>
 
-    <div class="chip">🪙 <b id="coins">320</b></div>
-    <div class="chip">波次 <b id="wave">0</b><span class="chip__dim"> / <span id="waveTotal">15</span></span></div>
-
-    <div class="hud__spacer"></div>
-
-    <span class="hud__build" id="buildInfo">下一波 12s</span>
-    <button class="btn btn--primary" type="button" id="startBtn">立即开战</button>
-    <button class="btn" type="button" id="pauseBtn">暂停</button>
-    <button class="btn" type="button" id="speedBtn">1×</button>
-    <button class="btn btn--ghost" type="button" id="restartBtn">重开</button>
+    <div class="hud-group actions">
+      <button id="startBtn" class="primary">立即开战</button>
+      <button id="pauseBtn">暂停</button>
+      <button id="speedBtn">1×</button>
+      <button id="muteBtn" class="ghost">声音</button>
+      <button id="restartBtn" class="ghost">重开</button>
+    </div>
   </header>
 
-  <main class="stage">
-    <canvas id="board" width="960" height="600" aria-label="游戏画面"></canvas>
-
-    <div class="banner" id="banner" aria-live="polite"></div>
-
-    <div class="overlay" id="overlay" hidden>
-      <div class="overlay__card">
+  <div class="stage">
+    <canvas id="board" aria-label="游戏画面"></canvas>
+    <div id="banner" class="banner"></div>
+    <div id="overlay" class="overlay" hidden>
+      <div class="panel">
         <h2 id="overlayTitle">守住了！</h2>
         <p id="overlayText"></p>
-        <button class="btn btn--primary" type="button" id="againBtn">再来一局</button>
+        <button id="againBtn" class="primary">再来一局</button>
       </div>
     </div>
+  </div>
 
-    <div class="toast" id="toast" role="status"></div>
-  </main>
+  <div id="nextWave" class="nextwave"></div>
 
-  <footer class="dock">
-    <div class="shop" id="shop" aria-label="建造菜单"></div>
-    <aside class="inspect" id="inspect" hidden aria-label="选中塔信息">
-      <div id="inspectBody"></div>
-    </aside>
-  </footer>
+  <section class="shop" id="shop" aria-label="防御塔"></section>
 
-  <p class="hint">点下方卡片选塔 → 点空地建造 · 点塔可升级/拆除 · 空格开下一波 · P 暂停</p>
-</div>
+  <section class="inspect" id="inspect">
+    <div id="inspectBody"><span class="hint">选中一座塔查看数值，或点左侧塔卡建造新的塔</span></div>
+  </section>
 
+  <p class="tip">点塔卡 → 点草地建造　·　点塔可升级 / 拆除　·　空格开波　·　1–5 选塔　·　P 暂停</p>
+</main>
+<div id="toast" class="toast"></div>
 <script type="module" src="js/ui.js"></script>
 </body>
 </html>
