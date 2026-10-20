@@ -1,60 +1,58 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>保卫萝卜 · 网页塔防</title>
-<meta name="description" content="打开即玩的网页塔防：5 种塔、15 波、零依赖、无账号。" />
-<link rel="stylesheet" href="styles.css" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>保卫萝卜 · 网页版</title>
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-<main class="app">
-  <header class="hud">
-    <div class="hud-group">
-      <div class="brand">保卫萝卜</div>
-      <div class="hp">
-        <span class="hp-num" id="hpText">20</span>
-        <div class="hp-track"><i id="hpFill" class="ok"></i></div>
+  <div class="app">
+    <header class="topbar">
+      <h1>🥕 保卫萝卜</h1>
+      <div class="hud">
+        <span class="stat">❤️ <b id="hud-life">20</b></span>
+        <span class="stat">🪙 <b id="hud-coins">320</b></span>
+        <span class="stat">🌊 <b id="hud-wave">0/15</b></span>
+        <span class="stat timer" id="hud-timer">下一波 12s</span>
       </div>
-    </div>
-
-    <div class="hud-group stats">
-      <div class="stat"><label>金币</label><b id="coins">320</b></div>
-      <div class="stat"><label>波次</label><b id="wave">0/15</b></div>
-    </div>
-
-    <div class="hud-group actions">
-      <button id="startBtn" class="primary">立即开战</button>
-      <button id="pauseBtn">暂停</button>
-      <button id="speedBtn">1×</button>
-      <button id="muteBtn" class="ghost">声音</button>
-      <button id="restartBtn" class="ghost">重开</button>
-    </div>
-  </header>
-
-  <div class="stage">
-    <canvas id="board" aria-label="游戏画面"></canvas>
-    <div id="banner" class="banner"></div>
-    <div id="overlay" class="overlay" hidden>
-      <div class="panel">
-        <h2 id="overlayTitle">守住了！</h2>
-        <p id="overlayText"></p>
-        <button id="againBtn" class="primary">再来一局</button>
+      <div class="controls">
+        <div class="speed" id="speed-btns">
+          <button data-speed="1" class="active">1×</button>
+          <button data-speed="2">2×</button>
+          <button data-speed="3">3×</button>
+        </div>
+        <button id="start-wave">立即开战</button>
+        <button id="pause-btn">暂停</button>
+        <button id="restart-btn">重开</button>
       </div>
-    </div>
+    </header>
+
+    <main class="stage">
+      <canvas id="game"></canvas>
+      <div id="flash" class="flash"></div>
+      <div id="overlay" class="overlay hidden">
+        <div class="overlay-card">
+          <h2 id="overlay-text">通关！</h2>
+          <p id="overlay-stats"></p>
+          <button id="overlay-restart">再来一局</button>
+        </div>
+      </div>
+    </main>
+
+    <footer class="shopbar">
+      <div id="shop" class="shop"></div>
+      <div id="selected-panel" class="selected-panel hidden"></div>
+    </footer>
   </div>
 
-  <div id="nextWave" class="nextwave"></div>
-
-  <section class="shop" id="shop" aria-label="防御塔"></section>
-
-  <section class="inspect" id="inspect">
-    <div id="inspectBody"><span class="hint">选中一座塔查看数值，或点左侧塔卡建造新的塔</span></div>
-  </section>
-
-  <p class="tip">点塔卡 → 点草地建造　·　点塔可升级 / 拆除　·　空格开波　·　1–5 选塔　·　P 暂停</p>
-</main>
-<div id="toast" class="toast"></div>
-<script type="module" src="js/ui.js"></script>
+  <script type="module" src="js/ui.js"></script>
+  <script>
+    // 覆盖层“再来一局”绑定（ui.js 内 restart 已定义，这里桥接）
+    window.addEventListener('DOMContentLoaded', () => {
+      const ov = document.getElementById('overlay-restart');
+      if (ov) ov.addEventListener('click', () => document.getElementById('restart-btn').click());
+    });
+  </script>
 </body>
 </html>

@@ -1,425 +1,528 @@
-// 保卫萝卜 V2 · 游戏逻辑层
-// 纯逻辑：不碰 DOM、不碰 Canvas、不读时间——时间由外部以 dt 喂进来。
-// 因此整套玩法可以在 Node 里无头跑完（PRD G3 / §5.2）。
+/**
+ * 纯逻辑层：不碰 DOM、不碰 canvas。
+ *
+ * 因此可以在 Node 里直接 import 这个模块跑仿真（见 sim/balance.mjs），
+ * 用来验证平衡与胜负判定 —— 这是本作“顶级”要求的核心：玩法可自动化验证。
+ *
+ * 设计要点（PRD §5 / §6）：
+ *  - 状态机只有 build | wave | won | lost 四态，避免“暂停时怪还在动”类 bug
+ *  - 索敌取“沿路径行进最远(dist 最大)”的敌人
+ *  - 伤害顺序：护盾优先 → 护甲减伤(最低1) → 灼烧无视护甲 → 范围边缘衰减最低 55%
+ *  - 经济：起始 320，清波奖励 20+波次×4，击杀按赏金，太阳花周期产金，拆除返 60%
+ */
 
 import {
-  TOWERS, ENEMIES, WAVES, WAVE_COUNT, BOSS_WAVES, ECONOMY, CARROT_HP,
-  BUILD_TIME, SPEEDS, MAX_LEVEL, PATH_SEGMENTS, isBuildableTile, hpScaleFor,
-  TILE,
-} from "./data.js";
-import {
-  statsAt, investedOf, pickTarget, applyDamage, applySlow, applyBurn,
-  tickDebuffs, moveEnemy, pointAt, dist,
-} from "./rules.js";
+  BUILD_TIME,
+  CARROT_HP,
+  COLS,
+  ENEMIES,
+  PATH,
+  ROWS,
+  START_COINS,
+  TOWERS,
+  UPGRADE,
+  WAVES,
+  isBuildable,
+} from './config.js';
 
-export const PHASE = { BUILD: "build", WAVE: "wave", WON: "won", LOST: "lost" };
+let nextId = 1;
+const uid = (prefix) => `${prefix}${nextId++}`;
 
-/** 哪些操作在当前状态下被允许 —— 状态机的转换表（PRD 缺口 5） */
-export function allowedActions(state) {
-  const over = state.phase === PHASE.WON || state.phase === PHASE.LOST;
+export function createGame() {
+  nextId = 1;
   return {
-    place: !over,
-    upgrade: !over,
-    sell: !over,
-    startWave: !over && !state.paused && state.phase === PHASE.BUILD,
-    pause: !over,
-    speed: !over,
-    restart: true,
-  };
-}
-
-export function createGame(seed = 1) {
-  const state = {
-    seed,
-    phase: PHASE.BUILD,
-    paused: false,
-    speed: 1,
+    phase: 'build', // build | wave | won | lost
     time: 0,
-    coins: ECONOMY.startCoins,
-    hp: CARROT_HP,
-    maxHp: CARROT_HP,
-    wave: 0,
+    coins: START_COINS,
+    carrotHp: CARROT_HP,
+    carrotMaxHp: CARROT_HP,
+    wave: 0, // 已完成的波数
     buildTimer: BUILD_TIME,
     towers: [],
     enemies: [],
     projectiles: [],
-    pending: [],
-    floats: [],
     particles: [],
-    stats: { kills: 0, leaks: 0, built: 0, spent: 0, earned: 0 },
+    floats: [],
+    spawnQueue: [],
+    selectedTowerId: null,
+    kills: 0,
+    leaks: 0,
+    shake: 0,
     events: [],
-    shake: { t: 0, dur: 0.3, mag: 0 },
-    carrotFlinch: 0,
-    nextId: 1,
   };
-  return state;
 }
 
-function emit(state, type, payload = {}) {
-  state.events.push({ type, ...payload });
+const emit = (state, event) => state.events.push(event);
+
+/* ---------------- 建造 ---------------- */
+
+export function towerAt(state, gx, gy) {
+  return state.towers.find((tower) => tower.gx === gx && tower.gy === gy) || null;
 }
 
-// ---------------- 塔 ----------------
-export function towerAt(state, col, row) {
-  return state.towers.find((t) => t.col === col && t.row === row) || null;
+export function towerCost(typeId, level = 1) {
+  const def = TOWERS[typeId];
+  if (!def) return Infinity;
+  if (level === 1) return def.cost;
+  return UPGRADE.cost({ cost: def.cost, level });
 }
 
-export function placeTower(state, col, row, type) {
-  if (!allowedActions(state).place) return { ok: false, reason: "对局已结束" };
-  if (state.paused) return { ok: false, reason: "暂停中不能建造" };
-  const def = TOWERS[type];
-  if (!def) return { ok: false, reason: "没有这种塔" };
-  if (!isBuildableTile(col, row)) return { ok: false, reason: "这里不能建造" };
-  if (towerAt(state, col, row)) return { ok: false, reason: "这里已经有塔了" };
-  if (state.coins < def.cost) {
-    return { ok: false, reason: `金币不足，还差 ${def.cost - state.coins}` };
+export function placeTower(state, gx, gy, typeId) {
+  if (state.phase === 'lost' || state.phase === 'won') {
+    return { ok: false, message: '本局已结束' };
   }
-  const upgradeCosts = [];
-  for (let lv = 1; lv < MAX_LEVEL; lv += 1) upgradeCosts.push(ECONOMY.upgradeCost(def.cost, lv));
+  const def = TOWERS[typeId];
+  if (!def) return { ok: false, message: '没有这种塔' };
+  if (!isBuildable(gx, gy)) return { ok: false, message: '这里不能建造' };
+  if (towerAt(state, gx, gy)) return { ok: false, message: '这块地已经有塔了' };
+  if (state.coins < def.cost) return { ok: false, message: `金币不够，还差 ${def.cost - state.coins}` };
+
+  state.coins -= def.cost;
   const tower = {
-    id: state.nextId++,
-    type,
-    def: { ...def, upgradeCosts },
-    col,
-    row,
-    x: col * TILE + TILE / 2,
-    y: row * TILE + TILE / 2,
+    id: uid('t'),
+    type: typeId,
     level: 1,
+    gx,
+    gy,
+    x: (gx + 0.5) * 60,
+    y: (gy + 0.5) * 60,
     cooldown: 0,
-    incomeTimer: def.interval || 0,
+    invested: def.cost,
     angle: -Math.PI / 2,
+    incomeTimer: def.kind === 'income' ? def.incomeEvery : 0,
+    pulse: 0,
     kills: 0,
   };
   state.towers.push(tower);
-  state.coins -= def.cost;
-  state.stats.built += 1;
-  state.stats.spent += def.cost;
-  emit(state, "build", { tower });
-  return { ok: true, tower };
+  state.selectedTowerId = tower.id;
+  emit(state, { type: 'build', tower });
+  return { ok: true, tower, message: `${def.name} 建造完成` };
 }
 
-export function upgradeCostOf(tower) {
-  if (tower.level >= MAX_LEVEL) return 0;
-  return tower.def.upgradeCosts[tower.level - 1];
+/** 当前等级下的有效数值（含升级缩放）。 */
+export function stats(tower) {
+  const def = TOWERS[tower.type];
+  const level = tower.level;
+  return {
+    damage: Math.round(def.damage * UPGRADE.damageMul ** (level - 1)),
+    range: def.range + UPGRADE.rangeAdd * (level - 1),
+    rate: def.rate * UPGRADE.rateMul ** (level - 1),
+    splash: def.splash ? def.splash + 6 * (level - 1) : 0,
+    income: def.income ? Math.round(def.income * (1 + 0.5 * (level - 1))) : 0,
+    burnDps: def.burnDps ? Math.round(def.burnDps * (1 + 0.5 * (level - 1))) : 0,
+  };
 }
 
 export function upgradeTower(state, id) {
-  if (!allowedActions(state).upgrade) return { ok: false, reason: "对局已结束" };
-  if (state.paused) return { ok: false, reason: "暂停中不能升级" };
   const tower = state.towers.find((t) => t.id === id);
-  if (!tower) return { ok: false, reason: "没有这座塔" };
-  if (tower.level >= MAX_LEVEL) return { ok: false, reason: "已满级" };
-  const cost = upgradeCostOf(tower);
-  if (state.coins < cost) {
-    return { ok: false, reason: `金币不足，还差 ${cost - state.coins}` };
-  }
+  if (!tower) return { ok: false, message: '没有选中塔' };
+  if (tower.level >= UPGRADE.maxLevel) return { ok: false, message: '已经满级' };
+  const cost = towerCost(tower.type, tower.level + 1);
+  if (state.coins < cost) return { ok: false, message: `金币不够，还差 ${cost - state.coins}` };
+
   state.coins -= cost;
-  state.stats.spent += cost;
   tower.level += 1;
-  emit(state, "upgrade", { tower });
-  return { ok: true, tower };
+  tower.invested += cost;
+  tower.pulse = 0.5;
+  emit(state, { type: 'upgrade', tower });
+  return { ok: true, tower, message: `升级到 ${tower.level} 级` };
 }
 
 export function sellTower(state, id) {
-  if (!allowedActions(state).sell) return { ok: false, reason: "对局已结束" };
-  if (state.paused) return { ok: false, reason: "暂停中不能拆除" };
-  const idx = state.towers.findIndex((t) => t.id === id);
-  if (idx < 0) return { ok: false, reason: "没有这座塔" };
-  const tower = state.towers[idx];
-  const refund = Math.floor(investedOf(tower) * ECONOMY.sellRefund);
-  state.towers.splice(idx, 1);
+  const index = state.towers.findIndex((t) => t.id === id);
+  if (index < 0) return { ok: false, message: '没有选中塔' };
+  const tower = state.towers[index];
+  const refund = Math.round(tower.invested * 0.6);
   state.coins += refund;
-  emit(state, "sell", { refund, tower });
-  return { ok: true, refund };
+  state.towers.splice(index, 1);
+  if (state.selectedTowerId === id) state.selectedTowerId = null;
+  emit(state, { type: 'sell', tower, refund });
+  return { ok: true, message: `拆除返还 ${refund} 金币` };
 }
 
-// ---------------- 波次 ----------------
+/* ---------------- 波次 ---------------- */
+
+function hpScale(waveNumber) {
+  return 1 + (waveNumber - 1) * 0.15;
+}
+
 export function startWave(state) {
-  if (!allowedActions(state).startWave) return { ok: false, reason: "现在不能开波" };
+  if (state.phase !== 'build') return { ok: false, message: '现在不能开波' };
   state.wave += 1;
-  state.phase = PHASE.WAVE;
-  state.buildTimer = 0;
-  state.waveStartTime = state.time;
-  const waveNo = state.wave;
-  const scale = hpScaleFor(waveNo);
-  const groups = WAVES[waveNo - 1] || [];
-  let laneIdx = 0;
-  for (const g of groups) {
-    for (let i = 0; i < g.count; i += 1) {
-      const at = g.delay + i * g.gap;
-      // 车道偏移让同波怪物呈扇形错开，而不是压成一条线
-      const lane = ((laneIdx++ % 3) - 1) * 9;
-      state.pending.push({ at, type: g.type, scale, lane });
+  state.phase = 'wave';
+  state.spawnQueue = [];
+
+  const wave = WAVES[state.wave - 1] || [];
+  const scale = hpScale(state.wave);
+
+  for (const group of wave) {
+    for (let i = 0; i < group.count; i += 1) {
+      state.spawnQueue.push({
+        type: group.type,
+        at: state.time + (group.delay || 0) + i * group.gap,
+        hpScale: scale,
+      });
     }
   }
-  state.pending.sort((a, b) => a.at - b.at);
-  emit(state, "wave-start", { wave: waveNo, boss: BOSS_WAVES.includes(waveNo) });
-  return { ok: true, wave: waveNo };
+  state.spawnQueue.sort((a, b) => a.at - b.at);
+
+  emit(state, { type: 'wave-start', wave: state.wave });
+  return { ok: true, wave: state.wave };
 }
 
-function spawn(state, item) {
-  const def = ENEMIES[item.type];
-  const hp = Math.round(def.hp * item.scale);
-  const shield = def.shield ? Math.round(def.shield * item.scale) : 0;
-  const enemy = {
-    id: state.nextId++,
-    type: def.id,
-    name: def.name,
+function finishWave(state) {
+  state.phase = 'build';
+  state.buildTimer = BUILD_TIME;
+  const bonus = 20 + state.wave * 4;
+  state.coins += bonus;
+  emit(state, { type: 'wave-clear', wave: state.wave, bonus });
+
+  if (state.wave >= WAVES.length) {
+    state.phase = 'won';
+    emit(state, { type: 'won' });
+  }
+}
+
+/* ---------------- 生成 ---------------- */
+
+function spawnEnemy(state, typeId, scale) {
+  const def = ENEMIES[typeId];
+  const hp = Math.round(def.hp * scale);
+  const start = PATH.pointAt(0);
+  state.enemies.push({
+    id: uid('e'),
+    type: typeId,
     hp,
     maxHp: hp,
-    shield,
-    maxShield: shield,
+    shield: def.shield ? Math.round(def.shield * scale) : 0,
+    maxShield: def.shield ? Math.round(def.shield * scale) : 0,
+    dist: 0,
+    x: start.x,
+    y: start.y,
     speed: def.speed,
-    bounty: def.bounty,
-    radius: def.radius,
-    leak: def.leak,
-    armor: def.armor || 0,
-    lane: item.lane,
-    progress: 0,
-    x: 0, y: 0,
+    // 横向错开（确定性，按序分到 5 条泳道），因生成间隔(gap)沿路径错开，不会重叠
+    lane: ((nextId % 5) - 2) * 6,
+    slowUntil: 0,
     slowFactor: 1,
-    slowTimer: 0,
+    burnUntil: 0,
     burnDps: 0,
-    burnTimer: 0,
-    burnAcc: 0,
+    radius: def.radius,
     dead: false,
-    hitFlash: 0,
-  };
-  const p = pointAt(0, enemy.lane);
-  enemy.x = p.x; enemy.y = p.y;
-  state.enemies.push(enemy);
-  return enemy;
+    wobble: Math.random() * Math.PI * 2,
+  });
 }
 
-// ---------------- 帧推进 ----------------
-// 倍速的正确做法：不放大步长，而是多跑几步。
-// 放大步长会让碰撞、追尾、灼烧 tick 的结算随速度变化——那就不是"同一个游戏"了。
-export function update(state, realDt) {
-  const events = [];
-  if (state.phase === PHASE.WON || state.phase === PHASE.LOST || state.paused) {
-    // 冻结时也要把已入队的事件交付出去，否则它们会一直压到恢复那一帧集中补放
-    if (state.events.length) {
-      events.push(...state.events);
-      state.events.length = 0;
-    }
-    return events;
+/* ---------------- 伤害 ---------------- */
+
+function hurt(state, enemy, amount, opts = {}) {
+  if (enemy.dead) return;
+  const def = ENEMIES[enemy.type];
+  let remaining = amount;
+
+  // 1) 护盾优先
+  if (enemy.shield > 0) {
+    const absorbed = Math.min(enemy.shield, remaining);
+    enemy.shield -= absorbed;
+    remaining -= absorbed;
+    if (absorbed > 0) addParticles(state, enemy.x, enemy.y, 3, '#9fc0ff', 2.2);
   }
-  const FIXED = 1 / 60;
-  let budget = Math.min(realDt, 0.25) * state.speed;
-  let guard = 0;
-  while (budget > 1e-6 && guard < 32) {
-    const slice = Math.min(FIXED, budget);
-    events.push(...stepOnce(state, slice));
-    budget -= slice;
-    guard += 1;
-    if (state.phase === PHASE.WON || state.phase === PHASE.LOST) break;
-  }
-  return events;
+  if (remaining <= 0) return;
+
+  // 2) 护甲减伤（灼烧无视护甲）
+  const armor = opts.ignoreArmor ? 0 : def.armor || 0;
+  const applied = Math.max(1, remaining - armor);
+  enemy.hp -= applied;
+  addFloats(state, enemy.x, enemy.y - enemy.radius, `-${Math.round(applied)}`, '#ffe9a8');
+
+  if (enemy.hp <= 0) killEnemy(state, enemy, opts.towerId);
 }
 
-function stepOnce(state, dt) {
-  const events = [];
-  if (state.phase === PHASE.WON || state.phase === PHASE.LOST || state.paused) return events;
+function killEnemy(state, enemy, towerId) {
+  if (enemy.dead) return;
+  enemy.dead = true;
+  const def = ENEMIES[enemy.type];
+  state.coins += def.reward;
+  state.kills += 1;
+
+  const tower = towerId ? state.towers.find((t) => t.id === towerId) : null;
+  if (tower) tower.kills += 1;
+
+  addFloats(state, enemy.x, enemy.y - 8, `+${def.reward}`, '#ffd25e');
+  addParticles(state, enemy.x, enemy.y, 12, def.color, 3.4);
+  if (enemy.type === 'boss') {
+    state.shake = Math.max(state.shake, 0.5);
+    addParticles(state, enemy.x, enemy.y, 26, '#c79bf0', 5);
+  }
+  emit(state, { type: 'kill', enemy });
+}
+
+/* ---------------- 效果 ---------------- */
+
+function addParticles(state, x, y, count, color, speed = 3) {
+  for (let i = 0; i < count; i += 1) {
+    const angle = Math.random() * Math.PI * 2;
+    const velocity = speed * (0.4 + Math.random());
+    state.particles.push({
+      x,
+      y,
+      vx: Math.cos(angle) * velocity * 20,
+      vy: Math.sin(angle) * velocity * 20 - 20,
+      life: 0.5 + Math.random() * 0.35,
+      maxLife: 0.85,
+      size: 1.6 + Math.random() * 2.4,
+      color,
+    });
+  }
+}
+
+function addFloats(state, x, y, text, color) {
+  state.floats.push({ x, y, text, color, life: 0.9, maxLife: 0.9 });
+}
+
+/* ---------------- 更新 ---------------- */
+
+export function update(state, dt) {
   state.time += dt;
+  state.shake = Math.max(0, state.shake - dt * 2);
 
-  // 1) 布防倒计时
-  if (state.phase === PHASE.BUILD) {
+  // 粒子与飘字在任何阶段都继续，避免失败瞬间画面僵住。
+  updateEffects(state, dt);
+
+  if (state.phase === 'lost' || state.phase === 'won') return;
+
+  if (state.phase === 'build') {
     state.buildTimer -= dt;
     if (state.buildTimer <= 0) startWave(state);
   }
 
-  // 2) 生成
-  if (state.phase === PHASE.WAVE && state.pending.length) {
-    const t = state.time - state.waveStartTime;
-    while (state.pending.length && state.pending[0].at <= t) {
-      spawn(state, state.pending.shift());
+  if (state.phase === 'wave') {
+    spawnDue(state);
+    updateEnemies(state, dt);
+    updateTowers(state, dt);
+    updateProjectiles(state, dt);
+
+    const noMoreSpawn = state.spawnQueue.length === 0;
+    const noEnemies = state.enemies.length === 0;
+    // 守卫：本帧若已因漏怪判负(lost)，不再被清波逻辑错误覆盖
+    if (state.phase === 'wave' && noMoreSpawn && noEnemies) finishWave(state);
+  } else {
+    // build 阶段塔仍可产金（太阳花），但不攻击
+    updateTowers(state, dt);
+  }
+}
+
+function spawnDue(state) {
+  while (state.spawnQueue.length && state.spawnQueue[0].at <= state.time) {
+    const next = state.spawnQueue.shift();
+    spawnEnemy(state, next.type, next.hpScale);
+  }
+}
+
+function updateEnemies(state, dt) {
+  for (const enemy of state.enemies) {
+    if (enemy.dead) continue;
+
+    if (enemy.burnUntil > state.time) {
+      hurt(state, enemy, enemy.burnDps * dt, { ignoreArmor: true });
+      if (Math.random() < dt * 8) addParticles(state, enemy.x, enemy.y, 1, '#ff9a5a', 1.6);
+    }
+
+    const slowed = enemy.slowUntil > state.time;
+    if (!slowed) enemy.slowFactor = 1;
+    const speed = enemy.speed * enemy.slowFactor;
+    enemy.dist += speed * dt;
+    enemy.wobble += dt * (6 + speed / 20);
+
+    const point = PATH.pointAt(enemy.dist);
+    // 用路径切线求法线，把同类怪物横向错开，避免叠成一个点
+    const ahead = PATH.pointAt(Math.min(PATH.length, enemy.dist + 2));
+    const behind = PATH.pointAt(Math.max(0, enemy.dist - 2));
+    const tx = ahead.x - behind.x;
+    const ty = ahead.y - behind.y;
+    const length = Math.hypot(tx, ty) || 1;
+    enemy.x = point.x + (-ty / length) * enemy.lane;
+    enemy.y = point.y + (tx / length) * enemy.lane;
+
+    if (enemy.dist >= PATH.length) {
+      enemy.dead = true;
+      const def = ENEMIES[enemy.type];
+      state.carrotHp -= def.damage;
+      state.leaks += 1;
+      state.shake = Math.max(state.shake, 0.35);
+      addParticles(state, point.x, point.y, 14, '#ff7a7a', 4);
+      addFloats(state, point.x, point.y - 20, `-${def.damage}`, '#ff8080');
+      emit(state, { type: 'leak', enemy });
+      if (state.carrotHp <= 0) {
+        state.carrotHp = 0;
+        state.phase = 'lost';
+        emit(state, { type: 'lost' });
+      }
     }
   }
+  state.enemies = state.enemies.filter((enemy) => !enemy.dead);
+}
 
-  // 3) 怪物移动 + Debuff
-  for (const e of state.enemies) {
-    if (e.dead) continue;
-    if (e.hitFlash > 0) e.hitFlash = Math.max(0, e.hitFlash - dt);
-    tickDebuffs(e, dt);
-    if (e.hp <= 0) { e.dead = true; continue; }
-    const arrived = moveEnemy(e, dt);
-    if (arrived) {
-      e.dead = true;
-      // PRD R4：同时抵达按类型累加扣减，生命最低为 0，不出现负数
-      state.hp = Math.max(0, state.hp - e.leak);
-      state.stats.leaks += 1;
-      // 漏怪是"你失败了"的信号，必须有分量：震屏 + 萝卜发抖
-      state.shake = { t: 0.36, dur: 0.36, mag: e.leak >= 5 ? 12 : 8 };
-      state.carrotFlinch = 0.5;
-      emit(state, "leak", { leak: e.leak, name: e.name, hp: state.hp });
+function pickTarget(state, tower, range) {
+  let best = null;
+  let bestDist = -1;
+  for (const enemy of state.enemies) {
+    if (enemy.dead) continue;
+    const distance = Math.hypot(enemy.x - tower.x, enemy.y - tower.y);
+    if (distance > range + enemy.radius) continue;
+    // 索敌优先级：沿路径行进最远(dist 最大) 的敌人
+    if (enemy.dist > bestDist) {
+      bestDist = enemy.dist;
+      best = enemy;
     }
   }
+  return best;
+}
 
-  // 4) 塔开火
+function updateTowers(state, dt) {
   for (const tower of state.towers) {
-    const s = statsAt(tower);
-    if (tower.def.income) {
+    const def = TOWERS[tower.type];
+    tower.pulse = Math.max(0, tower.pulse - dt);
+
+    if (def.kind === 'income') {
       tower.incomeTimer -= dt;
       if (tower.incomeTimer <= 0) {
-        tower.incomeTimer += tower.def.interval;
-        state.coins += s.income;
-        state.stats.earned += s.income;
-        state.floats.push({ x: tower.x, y: tower.y - 18, text: `+${s.income}`, life: 0.9, kind: "coin" });
+        tower.incomeTimer += def.incomeEvery;
+        const amount = stats(tower).income;
+        state.coins += amount;
+        tower.pulse = 0.45;
+        addFloats(state, tower.x, tower.y - 26, `+${amount}`, '#ffd25e');
+        emit(state, { type: 'income', tower, amount });
       }
       continue;
     }
+
     tower.cooldown -= dt;
     if (tower.cooldown > 0) continue;
-    const target = pickTarget(tower, state.enemies);
+
+    const s = stats(tower);
+    const target = pickTarget(state, tower, s.range);
     if (!target) continue;
-    tower.cooldown = s.interval;
+
     tower.angle = Math.atan2(target.y - tower.y, target.x - tower.x);
-    state.particles.push({
-      x: tower.x + Math.cos(tower.angle) * 20,
-      y: tower.y + Math.sin(tower.angle) * 20,
-      angle: tower.angle, life: 0.12, dur: 0.12, kind: "muzzle",
+    tower.cooldown = s.rate;
+    tower.pulse = 0.22;
+
+    state.projectiles.push({
+      id: uid('p'),
+      x: tower.x + Math.cos(tower.angle) * 16,
+      y: tower.y + Math.sin(tower.angle) * 16 - 6,
+      targetId: target.id,
+      tx: target.x,
+      ty: target.y,
+      speed: def.projectileSpeed,
+      damage: s.damage,
+      kind: def.kind,
+      splash: s.splash,
+      slowFactor: def.slowFactor,
+      slowDuration: def.slowDuration,
+      burnDps: s.burnDps,
+      burnDuration: def.burnDuration,
+      towerId: tower.id,
+      color: def.color,
+      trail: [],
+      dead: false,
     });
-    if (tower.def.projectileSpeed > 0) {
-      state.projectiles.push({
-        id: state.nextId++,
-        x: tower.x + Math.cos(tower.angle) * 18,
-        y: tower.y + Math.sin(tower.angle) * 18,
-        targetId: target.id,
-        tx: target.x,
-        ty: target.y,
-        speed: tower.def.projectileSpeed,
-        damage: s.damage,
-        splash: tower.def.splash || 0,
-        slow: tower.def.slow || null,
-        burn: tower.def.burn || null,
-        color: tower.def.color,
-        kind: tower.type,
-        life: 3,
-      });
-    } else {
-      // 瞬时命中（火焰塔）
-      hitEnemy(state, target, s.damage, tower.def);
-    }
   }
+}
 
-  // 5) 投射物
-  for (const p of state.projectiles) {
-    p.life -= dt;
-    const target = state.enemies.find((e) => e.id === p.targetId && !e.dead);
-    if (target) { p.tx = target.x; p.ty = target.y; }
-    const d = dist(p.x, p.y, p.tx, p.ty);
-    const step = p.speed * dt;
-    if (d <= step + 6) {
-      p.x = p.tx; p.y = p.ty;
-      p.dead = true;
-      if (target) hitEnemy(state, target, p.damage, p);
-      if (p.splash > 0) {
-        for (const e of state.enemies) {
-          if (e.dead || e === target) continue;
-          if (dist(e.x, e.y, p.x, p.y) <= p.splash + e.radius) {
-            hitEnemy(state, e, p.damage, p);
-          }
-        }
-        state.particles.push({ x: p.x, y: p.y, r: p.splash, life: 0.25, kind: "splash", color: p.color });
-      }
-    } else {
-      p.x += ((p.tx - p.x) / d) * step;
-      p.y += ((p.ty - p.y) / d) * step;
-    }
-    if (p.life <= 0) p.dead = true;
-  }
+function updateProjectiles(state, dt) {
+  for (const projectile of state.projectiles) {
+    if (projectile.dead) continue;
 
-  // 6) 清理 + 掉落
-  for (const e of state.enemies) {
-    if (e.dead && !e.rewarded) {
-      e.rewarded = true;
-      if (e.hp <= 0 || e.killedByTower) {
-        state.coins += e.bounty;
-        state.stats.earned += e.bounty;
-        state.stats.kills += 1;
-        state.floats.push({ x: e.x, y: e.y - 12, text: `+${e.bounty}`, life: 0.8, kind: "coin" });
-        const isBoss = e.type === "boss";
-        state.particles.push({
-          x: e.x, y: e.y, r: e.radius, life: isBoss ? 0.55 : 0.3,
-          kind: isBoss ? "boss-pop" : "pop",
-          color: isBoss ? "#f08aa8" : "#f0c060",
-          seed: e.id * 0.7,
-        });
-        if (isBoss) state.shake = { t: 0.28, dur: 0.28, mag: 7 };
-      }
+    const target = state.enemies.find((enemy) => enemy.id === projectile.targetId && !enemy.dead);
+    if (target) {
+      projectile.tx = target.x;
+      projectile.ty = target.y;
+    }
+
+    const dx = projectile.tx - projectile.x;
+    const dy = projectile.ty - projectile.y;
+    const distance = Math.hypot(dx, dy);
+    const step = projectile.speed * dt;
+
+    projectile.trail.push({ x: projectile.x, y: projectile.y });
+    if (projectile.trail.length > 6) projectile.trail.shift();
+
+    if (distance <= step || distance < 4) {
+      projectile.x = projectile.tx;
+      projectile.y = projectile.ty;
+      impact(state, projectile, target);
+      projectile.dead = true;
+    } else {
+      projectile.x += (dx / distance) * step;
+      projectile.y += (dy / distance) * step;
     }
   }
-  state.enemies = state.enemies.filter((e) => !e.dead);
   state.projectiles = state.projectiles.filter((p) => !p.dead);
+}
 
-  // 7) 视觉特效寿命
-  if (state.shake && state.shake.t > 0) state.shake.t = Math.max(0, state.shake.t - dt);
-  if (state.carrotFlinch > 0) state.carrotFlinch = Math.max(0, state.carrotFlinch - dt);
-  for (const p of state.particles) p.life -= dt;
-  state.particles = state.particles.filter((p) => p.life > 0);
-  for (const f of state.floats) { f.life -= dt; f.y -= dt * 22; }
-  state.floats = state.floats.filter((f) => f.life > 0);
+function impact(state, projectile, target) {
+  const aoe = projectile.kind === 'splash' || projectile.kind === 'slow';
 
-  // 8) 胜负判定
-  if (state.hp <= 0) {
-    state.phase = PHASE.LOST;
-    emit(state, "lost", { wave: state.wave, kills: state.stats.kills });
-  } else if (state.phase === PHASE.WAVE && !state.pending.length && !state.enemies.length) {
-    const bonus = ECONOMY.waveBonus(state.wave);
-    state.coins += bonus;
-    state.stats.earned += bonus;
-    emit(state, "wave-clear", { wave: state.wave, bonus });
-    if (state.wave >= WAVE_COUNT) {
-      state.phase = PHASE.WON;
-      emit(state, "won", { hp: state.hp, coins: state.coins });
-    } else {
-      state.phase = PHASE.BUILD;
-      state.buildTimer = BUILD_TIME;
+  addParticles(state, projectile.x, projectile.y, aoe ? 8 : 4, projectile.color, 2.6);
+
+  if (aoe) {
+    for (const enemy of state.enemies) {
+      if (enemy.dead) continue;
+      const distance = Math.hypot(enemy.x - projectile.x, enemy.y - projectile.y);
+      if (distance > projectile.splash) continue;
+      // 范围边缘衰减：中心全额，边缘最低 55%
+      const falloff = 1 - (distance / projectile.splash) * 0.45;
+      if (projectile.damage > 0) {
+        hurt(state, enemy, projectile.damage * falloff, { towerId: projectile.towerId });
+      }
+      if (projectile.kind === 'slow') {
+        enemy.slowFactor = Math.min(enemy.slowFactor, projectile.slowFactor);
+        enemy.slowUntil = Math.max(enemy.slowUntil, state.time + projectile.slowDuration);
+      }
     }
+    return;
   }
 
-  events.push(...state.events);
-  state.events.length = 0;
-  return events;
+  if (target && !target.dead) {
+    hurt(state, target, projectile.damage, { towerId: projectile.towerId });
+    if (projectile.kind === 'burn' && projectile.burnDps > 0) {
+      target.burnUntil = Math.max(target.burnUntil, state.time + projectile.burnDuration);
+      target.burnDps = Math.max(target.burnDps, projectile.burnDps);
+    }
+  }
 }
 
-function hitEnemy(state, enemy, damage, source) {
-  if (enemy.dead) return;
-  applyDamage(enemy, damage);
-  enemy.hitFlash = 0.12;
-  if (enemy.hp <= 0) enemy.killedByTower = true;
-  if (source.slow && !enemy.dead) applySlow(enemy, source.slow.factor, source.slow.duration);
-  if (source.burn && !enemy.dead) applyBurn(enemy, source.burn.dps, source.burn.duration);
+function updateEffects(state, dt) {
+  for (const particle of state.particles) {
+    particle.life -= dt;
+    particle.x += particle.vx * dt;
+    particle.y += particle.vy * dt;
+    particle.vy += 260 * dt;
+    particle.vx *= 0.98;
+  }
+  state.particles = state.particles.filter((p) => p.life > 0);
+
+  for (const float of state.floats) {
+    float.life -= dt;
+    float.y -= 34 * dt;
+  }
+  state.floats = state.floats.filter((f) => f.life > 0);
 }
 
+/* ---------------- 选购 ---------------- */
 
-// ---------------- 操作 ----------------
-export function togglePause(state) {
-  if (!allowedActions(state).pause) return { ok: false, reason: "对局已结束" };
-  state.paused = !state.paused;
-  return { ok: true, paused: state.paused };
+export function selectTower(state, id) {
+  state.selectedTowerId = id;
 }
 
-export function cycleSpeed(state) {
-  if (!allowedActions(state).speed) return { ok: false, reason: "对局已结束" };
-  const i = SPEEDS.indexOf(state.speed);
-  state.speed = SPEEDS[(i + 1) % SPEEDS.length];
-  return { ok: true, speed: state.speed };
+export function restartable(state) {
+  return state.phase === 'won' || state.phase === 'lost';
 }
 
-/** 对局进度快照，供 UI 与测试读取 */
-export function snapshot(state) {
-  return {
-    phase: state.phase,
-    paused: state.paused,
-    speed: state.speed,
-    coins: Math.floor(state.coins),
-    hp: state.hp,
-    wave: state.wave,
-    towers: state.towers.length,
-    enemies: state.enemies.length,
-    buildTimer: Math.max(0, Math.ceil(state.buildTimer)),
-    kills: state.stats.kills,
-    leaks: state.stats.leaks,
-  };
+export function totalWaves() {
+  return WAVES.length;
 }
+
+// 导出内部函数，便于 Node 侧断言测试（支撑 PRD “玩法可自动化验证” 要求）。
+export { PATH, isBuildable, ENEMIES, TOWERS, COLS, ROWS, pickTarget, hurt };

@@ -1,10 +1,12 @@
 {
-  "name": "carrot-defense-v2",
-  "private": true,
+  "name": "carrot-defense",
+  "version": "1.0.0",
+  "description": "保卫萝卜网页版 — 纯前端零依赖塔防，逻辑层可在 Node 无头仿真（顶级 PRD 验证版）",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/rules.test.js tests/state.test.js",
-    "sim": "node scripts/sim.js",
-    "e2e": "node scripts/e2e.js"
-  }
+    "sim": "node sim/balance.mjs",
+    "test": "node test/logic.test.mjs && node test/render.smoke.mjs",
+    "verify": "node test/logic.test.mjs && node test/render.smoke.mjs && node sim/balance.mjs"
+  },
+  "license": "MIT"
 }
