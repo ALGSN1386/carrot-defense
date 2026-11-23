@@ -5,6 +5,8 @@
   "scripts": {
     "test": "node --test tests/rules.test.js tests/state.test.js",
     "sim": "node scripts/sim.js",
-    "e2e": "node scripts/e2e.js"
+    "e2e": "node scripts/e2e.js",
+    "benchmark": "node tools/benchmark.mjs",
+    "verify": "node tools/verify-identity.mjs"
   }
 }

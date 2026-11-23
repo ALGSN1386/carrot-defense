@@ -11,6 +11,7 @@ import {
 } from "./game.js";
 import { statsAt, investedOf } from "./rules.js";
 import { buildBackground, drawScene, drawBody } from "./render.js";
+import { hudViewModel, applyHudViewModel } from "./hudvm.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -302,51 +303,45 @@ function onPointerDown(ev) {
 
 // ---------------- HUD ----------------
 let hudAcc = 0;
+const hudPrev = {};
+
+// 写入器集合：把纯视图模型落到真实 DOM。差量由 applyHudViewModel 负责。
+const hudWriters = {
+  coins: (v) => { $("coins").textContent = v; },
+  wave: (v) => { $("wave").textContent = v; },
+  hpText: (v) => { $("hpText").textContent = v; },
+  hpWidth: (v) => { $("hpFill").style.width = v; },
+  hpClass: (v) => { $("hpFill").className = v; },
+  speedText: (v) => { $("speedBtn").textContent = v; },
+  pauseText: (v) => { $("pauseBtn").textContent = v; },
+  speedPressed: (v) => { $("speedBtn").setAttribute("aria-pressed", v); },
+  pausePressed: (v) => { $("pauseBtn").setAttribute("aria-pressed", v); },
+  startText: (v) => { $("startBtn").textContent = v; },
+  startDisabled: (v) => { $("startBtn").disabled = v; },
+  pauseDisabled: (v) => { $("pauseBtn").disabled = v; },
+  speedDisabled: (v) => { $("speedBtn").disabled = v; },
+  banner: (v) => { $("banner").textContent = v; },
+  bannerClass: (v) => { $("banner").className = v; },
+  nextWave: (v) => { $("nextWave").textContent = v; },
+  nextWaveShow: (v) => { $("nextWave").style.display = v; },
+  card: (id, item) => {
+    const card = document.querySelector(`.card[data-type="${id}"]`);
+    if (!card) return;
+    card.disabled = item.disabled;
+    card.classList.toggle("poor", item.poor);
+  },
+};
+
 function renderHud() {
-  const s = snapshot(state);
-  $("coins").textContent = s.coins;
-  $("wave").textContent = `${s.wave}/${WAVE_COUNT}`;
-  $("hpText").textContent = s.hp;
-  $("hpFill").style.width = `${(s.hp / CARROT_HP) * 100}%`;
-  $("hpFill").className = s.hp / CARROT_HP > 0.5 ? "ok" : s.hp / CARROT_HP > 0.25 ? "warn" : "bad";
-  $("speedBtn").textContent = `${state.speed}×`;
-  $("pauseBtn").textContent = state.paused ? "继续" : "暂停";
-  $("speedBtn").setAttribute("aria-pressed", state.speed > 1 ? "true" : "false");
-  $("pauseBtn").setAttribute("aria-pressed", state.paused ? "true" : "false");
-
-  const over = state.phase === PHASE.WON || state.phase === PHASE.LOST;
-  const startBtn = $("startBtn");
-  if (over) {
-    startBtn.disabled = true;
-    startBtn.textContent = "已结束";
-  } else if (state.phase === PHASE.BUILD && !state.paused) {
-    startBtn.disabled = false;
-    startBtn.textContent = `立即开战（${s.buildTimer}s）`;
-  } else if (state.paused) {
-    // 暂停是"全面冻结"：连开波也不许，否则恢复瞬间整波一起涌出
-    startBtn.disabled = true;
-    startBtn.textContent = "已暂停";
-  } else {
-    startBtn.disabled = true;
-    startBtn.textContent = "战斗中";
-  }
-  $("pauseBtn").disabled = over;
-  $("speedBtn").disabled = over;
-
-  document.querySelectorAll(".card").forEach((card) => {
-    const def = TOWERS[card.dataset.type];
-    card.disabled = over || state.coins < def.cost;
-    card.classList.toggle("poor", state.coins < def.cost);
+  const vm = hudViewModel(state, {
+    WAVE_COUNT,
+    CARROT_HP,
+    nextWave: nextWaveText(),
+    banner: bannerText(),
+    cardIds: TOWER_ORDER,
+    cardCost: (id) => TOWERS[id].cost,
   });
-
-  const nw = $("nextWave");
-  if (nw) {
-    const preview = nextWaveText();
-    nw.textContent = preview;
-    nw.style.display = preview ? "" : "none";
-  }
-  $("banner").textContent = bannerText();
-  $("banner").className = `banner ${state.phase === PHASE.WAVE ? "live" : ""}`;
+  applyHudViewModel(vm, hudPrev, hudWriters);
   syncInspect();
   renderOverlay();
 }

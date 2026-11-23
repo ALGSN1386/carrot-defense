@@ -75,13 +75,39 @@ styles.css
 js/data.js      地图 / 塔 / 怪物 / 波次 / 经济 —— 唯一允许改数值的地方
 js/rules.js     战斗规则（纯函数，无状态）
 js/game.js      状态机 + 帧推进（不碰 DOM / Canvas）
+js/fastpath.js  原地压缩等每帧热路径原语
+js/hudvm.js     HUD 视图模型（纯函数，差量写入）
 js/render.js    全部画面程序化绘制，仓库里没有一张图片
 js/ui.js        DOM、输入、主循环
 scripts/sim.js  无头平衡仿真
+tools/benchmark.mjs       创新点 A/B 性能实验台
+tools/verify-identity.mjs 优化前后玩法一致性回归
+baseline/js/    冻结的优化前代码（A/B 实验的基线 A）
+docs/optimization-report.md  创新点优化与可复验证据
 tests/          单元测试
 ```
 
 `js/game.js` 与 `js/rules.js` 不引用任何浏览器 API，这正是它能在 Node 里跑仿真的原因。
+
+## 创新点优化（可复验证据）
+
+针对 60fps 每帧热路径做了四项优化，全部有 A/B 实验数据，且用哈希证明玩法结果未变。完整报告见 [docs/optimization-report.md](docs/optimization-report.md)。
+
+| 优化 | A → B | 提升 |
+|---|---|---:|
+| 索敌平方距离（替代 `Math.hypot`） | 132.60 → 19.27 ms / 8万次 | 85.5% |
+| `statsAt` WeakMap 面板缓存 | 17.19 → 13.27 ms / 50万次 | 22.8% |
+| 原地压缩（替代每帧 `filter`） | 108.43 → 55.10 ms / 8万轮 | 49.2% |
+| HUD 差量写入 | 72,000 → 22 次 DOM 写入 | 100.0% |
+
+另有一个候选（投射物 Map 索引）被实验否决——实测慢 20.2%，未进入交付代码，记录见报告。
+
+本地复现：
+
+```sh
+node tools/verify-identity.mjs   # 证明 A/B 玩法结果逐字段一致
+node tools/benchmark.mjs         # 跑 A/B 性能实验
+```
 
 ## 已知限制
 

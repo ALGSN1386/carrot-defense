@@ -44,14 +44,23 @@ export function pointAt(progress, lane = 0) {
   return { x: x + nx * lane, y: y + ny * lane, ux: seg.ux, uy: seg.uy };
 }
 
+// 面板缓存：statsAt 每帧被 game.js 与 render.js 各调用一次，每次都做两次 Math.pow。
+// 塔的面板只取决于 def 与 level，用 WeakMap 按对象缓存，升级（level 变化）时自动失效。
+// 用 WeakMap 而不是挂在 tower 上，避免污染状态对象、影响快照与测试的深比较。
+const statsCache = new WeakMap();
+
 /** 塔在某一级下的实际面板 */
 export function statsAt(tower) {
+  const cached = statsCache.get(tower);
+  if (cached && cached.level === tower.level) return cached.value;
   const def = tower.def;
   const lv = tower.level - 1;
   const damage = def.damage ? def.damage * Math.pow(UPGRADE.damage, lv) : 0;
   const range = def.range ? def.range + UPGRADE.range * lv : 0;
   const interval = def.interval ? def.interval * Math.pow(UPGRADE.interval, lv) : 0;
-  return { damage, range, interval, income: def.income ? def.income + 4 * lv : 0 };
+  const value = { damage, range, interval, income: def.income ? def.income + 4 * lv : 0 };
+  statsCache.set(tower, { level: tower.level, value });
+  return value;
 }
 
 /** 累计投入（用于拆除返还） */
@@ -77,14 +86,24 @@ export function applyDamage(enemy, raw, ignoreArmor = false) {
   return dealt;
 }
 
-/** 索敌：射程内进度最大的敌人 */
+/**
+ * 索敌：射程内进度最大的敌人。
+ * 用平方距离比较避开每对塔-敌人的一次 sqrt（hypot 内部是 sqrt(dx²+dy²)）。
+ * 判据 d > r 与 d² > r² 在 r>0 时完全等价，不改变索敌结果。
+ * 先算轴向差值做早退，进一步减少乘加。
+ */
 export function pickTarget(tower, enemies) {
   const s = statsAt(tower);
   if (!s.range) return null;
+  const tx = tower.x;
+  const ty = tower.y;
   let best = null;
   for (const e of enemies) {
     if (e.dead) continue;
-    if (dist(tower.x, tower.y, e.x, e.y) > s.range + e.radius) continue;
+    const dx = tx - e.x;
+    const dy = ty - e.y;
+    const r = s.range + e.radius;
+    if (dx * dx + dy * dy > r * r) continue;
     if (!best || e.progress > best.progress || (e.progress === best.progress && e.id < best.id)) {
       best = e;
     }
