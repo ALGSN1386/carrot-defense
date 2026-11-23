@@ -109,3 +109,14 @@ PASS  quality   won  第15波 hp=14 kills=149  hash=e8dbd9b0dcf6 / e8dbd9b0dcf6
 - [x] 优化已落代码：`js/rules.js`、`js/game.js`、`js/fastpath.js`（新增）、`js/hudvm.js`（新增）、`js/ui.js`
 - [x] 被否决候选如实记录（第 3 节），不夸大收益
 - [x] 项目仍可展示：在线试玩 <https://algsn1386.github.io/carrot-defense/>
+
+## 7. 部署排障：Pages 部署源与优化分支错位
+
+优化代码最初只推送到 `main`，但仓库的 GitHub Pages 实际从 `v3` 分支部署，导致线上长时间仍是旧版单体实现（`config.js` 架构），`data.js`/`rules.js`/`fastpath.js`/`hudvm.js` 全部 404。排查与修复过程：
+
+1. 现象：仓库 `main` 已是最新（`b0225b6`），`raw.githubusercontent.com/.../main/js/*.js` 全部 200，但 `algsn1386.github.io/carrot-defense/` 上 `ui.js`/`game.js` 仍是旧代码，`data.js` 等新模块 404。
+2. 定位：仓库存在 `main`（V2 分离模块）与 `v3`（旧单体版）两个架构完全不同的分支；线上 404 模式与 `v3` 分支完全一致，确认 Pages 部署源指向 `v3`。
+3. 修复：把完整 V2 代码同步到 `v3` 分支。注意 `push_files` 只创建不存在的文件、不覆盖已存在文件，因此新模块（`data.js`/`rules.js`/`fastpath.js`/`hudvm.js`）创建成功，而 `index.html`/`styles.css`/`game.js`/`ui.js` 需逐个取 blob SHA 后用 `create_or_update_file` 强制覆盖。
+4. 验证：9 个文件逐字节与本地一致；线上 7 个 JS 模块全部 200；Edge 无头浏览器加载线上页面，控制台无 JS 错误，画面正常渲染（顶栏 HUD、地图、胡萝卜、5 张塔卡、下一波预告）。
+
+结论：**线上站点已运行优化后的 V2 版本**，A/B 实验与一致性证明中的改动均已生效。
